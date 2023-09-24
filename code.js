@@ -33,6 +33,7 @@ class Results {
         score: 0,
         spread: 0,
         starts: 0,
+        byes: 0,
       }
     }
     return this.players[name];
@@ -52,6 +53,9 @@ class Results {
     }
     p.score = p.wins + 0.5 * p.ties;
     p.starts += result.start;
+    if (result.opp.toLowerCase() === "bye") {
+      p.byes += 1;
+    }
   }
 
   addGeneratedResult(game_result) {
@@ -59,7 +63,7 @@ class Results {
     this.results.push(game_result);
     this.processResult(game_result);
   }
-  
+
   processResult(game_result) {
     var winner = winnerResults(game_result);
     var loser = loserResults(game_result);
@@ -80,24 +84,16 @@ class Results {
     }));
   }
 
-  calculateRepeats(round) {
-    var repeats = {}
-    for (var r of this.results) {
-      if (r.round <= round) {
-        var key = [r.winner, r.loser].sort()
-        if (repeats[key] === undefined) {
-          repeats[key] = 0
-        }
-        repeats[key] += 1;
-      }
-    }
-    return repeats;
+  isRoundComplete(round) {
+    var n_games = this.rounds[round].length;
+    var n_players = Object.keys(this.players).length;
+    return n_games * 2 == n_players;
   }
 
   extractPairings(round) {
     var pairings = [];
-    // console.log("round:", round)
-    // console.log(this.rounds[round])
+    console.log("extracting pairings for round:", round)
+    console.log(this.rounds[round])
     for (const game_result of this.rounds[round]) {
       var pairing = {
         first: {name: game_result.winner, start: game_result.winner_first},
@@ -110,23 +106,169 @@ class Results {
 }
 
 class Entrants {
-  constructor(entrants, seeding, tables) {
+  constructor(entrants, seeding, tables, fixed_pairings, fixed_starts) {
     this.entrants = entrants
     this.seeding = seeding
     this.tables = tables
-    this.seeding_lookup = {}
+    this.fixed_pairings = fixed_pairings
+    this.fixed_starts = fixed_starts
   }
 
   addEntrant(e) {
     this.entrants[e.name] = e.full_name;
-    var seeding = { name: e.name, rating: e.rating, seed: e.seed };
-    this.seeding.push(seeding);
-    this.seeding_lookup[e.name] = seeding;
+    this.seeding.push({ name: e.name, rating: e.rating, seed: e.seed });
     if (e.table != "") {
       this.tables[e.name] = parseInt(e.table);
     }
   }
 }
+
+class Repeats {
+  constructor() {
+    this.matches = {}
+  }
+
+  add(name1, name2) {
+    // Add a pairing and return the current count
+    var key = [name1, name2].sort();
+    if (this.matches[key] === undefined) {
+      this.matches[key] = 0;
+    }
+    this.matches[key]++;
+    return this.matches[key];
+  }
+
+  get(name1, name2) {
+    var key = [name1, name2].sort();
+    return this.matches[key] || 0;
+  }
+}
+
+class Starts {
+  constructor(res, entrants) {
+    this.starts = {}  // number of starts
+    this.h2h = {}  // for [name1, name2], did name1 start?
+    this.recent_starts = {}  // most recent round started
+    this.fixed_starts = entrants.fixed_starts;
+  }
+
+  init(name) {
+    if (this.starts[name] === undefined) {
+      this.starts[name] = 0;
+    }
+    if (this.recent_starts[name] === undefined) {
+      this.recent_starts[name] = 0;
+    }
+  }
+
+  _record(name1, name2, round, p1_starts) {
+    if (p1_starts) {
+      this.starts[name1]++
+      this.recent_starts[name1] = round;
+      this.h2h[[name1, name2]] = true;
+      this.h2h[[name2, name1]] = false;
+    } else {
+      this.starts[name2]++
+      this.recent_starts[name2] = round;
+      this.h2h[[name1, name2]] = false;
+      this.h2h[[name2, name1]] = true;
+    }
+  }
+
+  register(pairing, round) {
+    // Register an extracted pairing
+    const name1 = pairing.first.name;
+    const name2 = pairing.second.name;
+    this.init(name1);
+    this.init(name2);
+    this._record(name1, name2, round, pairing.first.start);
+  }
+
+  add(name1, name2, round) {
+    this.init(name1);
+    this.init(name2);
+    var p1_starts;
+    // bye always starts
+    if (name1.toLowerCase() === "bye") {
+      p1_starts = true;
+    } else if (name2.toLowerCase() === "bye") {
+      p1_starts = false;
+    } else if (this.fixed_starts[[round, name1]] === true) {
+      p1_starts = true;
+    } else if (this.fixed_starts[[round, name2]] === true) {
+      p1_starts = false;
+    } else {
+      var starts1 = this.starts[name1];
+      var starts2 = this.starts[name2];
+      if (starts1 == starts2) {
+        // Whoever went first most recently should go second now.
+        if (this.h2h[[name1, name2]] === undefined) {
+          if (this.recent_starts[name1] > this.recent_starts[name2]) {
+            p1_starts = false;
+          } else {
+            p1_starts = true;
+          }
+        } else {
+          if (this.h2h[[name1, name2]]) {
+            p1_starts = false;
+          } else {
+            p1_starts = true;
+          }
+        }
+      } else {
+        p1_starts = starts1 < starts2;
+      }
+    }
+    this._record(name1, name2, round, p1_starts);
+    // console.log("starts:", name1, name2, p1_starts, this.starts[name1], this.starts[name2])
+    return p1_starts;
+  }
+}
+
+class Byes {
+  constructor() {
+    this.byes = {}
+  }
+
+  init(name) {
+    if (this.byes[name] === undefined) {
+      this.byes[name] = 0;
+    }
+  }
+
+  add(name) {
+    this.init(name);
+    this.byes[name]++
+  }
+
+  get(name) {
+    var ret = this.byes[name];
+    return ret === undefined ? 0 : ret;
+  }
+
+  update(p) {
+    if (isBye(p.first)) {
+      this.add(p.second.name)
+    }
+    if (isBye(p.second)) {
+      this.add(p.first.name)
+    }
+  }
+
+  reset() {
+    this.byes = {}
+  }
+}
+
+class Fixed {
+  constructor(pairings, starts) {
+    this.pairings = pairings
+    this.starts = starts
+  }
+}
+
+// Global register of byes including ones paired for future rounds
+var BYES = new Byes();
 
 function winnerResults(game_result) {
   var start = game_result.winner_first ? 1 : 0;
@@ -205,7 +347,11 @@ function makeEntrants(rows) {
   var entrants = {}
   var seeding = []
   var tables = {}
-  var ret = new Entrants(entrants, seeding, tables);
+  var fixed_pairings = {}
+  var fixed_starts = {}
+  var ret = new Entrants(
+    entrants, seeding, tables, fixed_pairings, fixed_starts
+  );
   for (var entry of rows) {
     ret.addEntrant(entrantFromRow(entry));
   }
@@ -221,15 +367,16 @@ function collectEntrants() {
   var last_row = result_sheet.getRange("A2").getDataRegion(SpreadsheetApp.Dimension.ROWS).getLastRow();
   var data = results.slice(0, last_row - 1);
   var entrants = makeEntrants(data);
-  // console.log("Seeding:", entrants.seeding);
-  // console.log("Entrants:", entrants.entrants);
-  // console.log("Tables:", entrants.tables);
+  console.log("Seeding:", entrants.seeding);
+  console.log("Entrants:", entrants.entrants);
+  console.log("Tables:", entrants.tables);
   return entrants;
 }
 
 function makeRoundPairings(rows) {
   var quads = {}
   var round_robins = {}
+  var double_round_robins = {}
   var rounds = []
   for (var entry of rows) {
     // col A = entry[0], B = 1
@@ -240,11 +387,18 @@ function makeRoundPairings(rows) {
         quads[pairing] = [];
       }
       quads[pairing].push(round);
+    } else if (pairing == "RAND") {
+      rounds[round] = { round: round, type: pairing, start: round };
     } else if (pairing.startsWith("R")) {
       if (round_robins[pairing] === undefined) {
         round_robins[pairing] = [];
       }
       round_robins[pairing].push(round);
+    } else if (pairing.startsWith("DR")) {
+      if (double_round_robins[pairing] === undefined) {
+        double_round_robins[pairing] = [];
+      }
+      double_round_robins[pairing].push(round);
     } else if (pairing == "CH") {
       rounds[round] = { round: round, type: pairing, start: 0 };
     } else if (pairing == "ST") {
@@ -267,12 +421,19 @@ function makeRoundPairings(rows) {
       rounds[round] = { round: round, type: "R", start: rr[0], pos: i + 1 }
     }
   }
+  for (const r of Object.keys(double_round_robins)) {
+    const rr = double_round_robins[r];
+    for (i = 0; i < rr.length; i++) {
+      round = rr[i];
+      rounds[round] = { round: round, type: "DR", start: rr[0], pos: i + 1 }
+    }
+  }
   return rounds;
 }
 
 function collectRoundPairings() {
   var sheet = SpreadsheetApp.getActiveSpreadsheet();
-  var result_sheet = sheet.getSheetByName("RoundPairing");
+  var result_sheet = sheet.getSheetByName("Settings");
   var result_range = result_sheet.getRange("A2:B");
   var results = result_range.getValues();
   var last_row = result_sheet.getRange("A2").getDataRegion(SpreadsheetApp.Dimension.ROWS).getLastRow();
@@ -280,11 +441,50 @@ function collectRoundPairings() {
   return makeRoundPairings(data);
 }
 
+function parseFixedPairing(p) {
+  if (p.startsWith("#")) {
+    return { standing: parseInt(p.slice(1)) };
+  } else {
+    const regex = /\s\(.*$/;
+    p = p.replace(regex, '');
+    return { name: p };
+  }
+}
+
+function makeFixedPairings(rows) {
+  var fp = {};
+  var fs = {};
+  for (var entry of rows) {
+    var round = parseInt(entry[0]);
+    var p1 = parseFixedPairing(entry[1]);
+    var p2 = parseFixedPairing(entry[2]);
+    if (fp[round] === undefined) {
+      fp[round] = [];
+    }
+    fp[round].push({first: p1, second: p2})
+    if (entry[3] !== undefined){
+      var sp = parseFixedPairing(entry[3]);
+      fs[[round, sp.name]] = true;
+    }
+  }
+  return new Fixed(fp, fs);
+}
+
+function collectFixedPairings() {
+  var sheet = SpreadsheetApp.getActiveSpreadsheet();
+  var result_sheet = sheet.getSheetByName("FixedPairing");
+  var result_range = result_sheet.getRange("A2:D");
+  var results = result_range.getValues();
+  var last_row = result_sheet.getRange("A2").getDataRegion(SpreadsheetApp.Dimension.ROWS).getLastRow();
+  var data = results.slice(0, last_row - 1);
+  return makeFixedPairings(data);
+}
+
 // -----------------------------------------------------
 // Filter data based on round
 
 function standingsAfterRound(res, entrants, round) {
-  // console.log("standings at round:", round);
+  console.log("standings at round:", round);
   // Calculate standings as of round <round>
   if (round == 0) {
     return entrants.seeding.map(x => res.getPlayerResults(x.name))
@@ -294,41 +494,111 @@ function standingsAfterRound(res, entrants, round) {
   tmp_res.processResults();
   var standings = Object.values(tmp_res.players);
   standings.sort(_player_standings_sort);
+  standings = getCurrentEntrantsRanking(res, entrants, standings);
   return standings
 }
 
-function getCurrentEntrantsRanking(entrants, standings) {
-  // Sort by wins and spread
-  var ids = Object.keys(entrants.entrants);
-  // Get standings only for people in current entrants list
-  ps = standings.filter(function(s) { return s.id in entrants.entrants });
-  // Add standings for new entrants with no results
-  newcomers = []
-  var paired = new Set(ps.map(function(p) { return p.id }));
-  for (const e of Object.values(entrants.entrants)) {
-    if (!paired.has(e.id)) {
-      newcomers.push({id: e.id, name: e.name, rating: e.rating});
+function getFixedPairing(standings, p) {
+  if (p.standing !== undefined) {
+    return standings[p.standing - 1].name;
+  } else {
+    return p.name;
+  }
+}
+
+function removeFixedPairings(standings, entrants, round) {
+  var fp = entrants.fixed_pairings[round];
+  console.log("round:", round);
+  console.log("fp:", fp);
+  var remove = {};
+  var fixed = [];
+  if (fp !== undefined) {
+    for (var pair of fp) {
+      var p1 = getFixedPairing(standings, pair.first);
+      var p2 = getFixedPairing(standings, pair.second);
+      if (p1 != p2) {
+        console.log("p1, p2:", [p1, p2]);
+        [p1, p2] = [p1, p2].sort();
+        console.log("sorted:", [p1, p2]);
+        remove[p1] = p2;
+        remove[p2] = p1;
+        fixed.push({first: {name: p1}, second: {name: p2}});
+      }
     }
   }
-  shuffleArray(newcomers);
-  all = ps.concat(newcomers);
-  maybeAddBye(all);
+  //console.log("pairing:", remove);
+  standings = standings.filter(p => remove[p.name] === undefined);
+  var bye_pair = pairBye(standings);
+  if (bye_pair.length > 0) {
+    fixed.push({first: bye_pair[0], second: bye_pair[1]})
+    standings = standings.filter(p => p.name != bye_pair[0].name);
+    standings = standings.filter(p => p.name != bye_pair[1].name);
+  }
+  //console.log("new standings:", standings);
+  return [standings, fixed];
+}
+
+function isBye(p) {
+  return p.name.toLowerCase() == "bye";
+}
+
+function _player_byes_sort(x, y) {
+  if (x.byes == y.byes) {
+    if (x.score == y.score) {
+      return (x.spread - y.spread);
+    } else {
+      return (x.score - y.score);
+    }
+  } else {
+    return (x.byes - y.byes)
+  }
+}
+
+function pairBye(standings) {
+  var bye = standings.filter(isBye);
+  if (bye.length == 0) {
+    return []
+  }
+  var candidates = standings.filter((p) => !isBye(p));
+  for (var p of candidates) {
+    p.byes = BYES.get(p.name);
+  }
+  candidates.sort(_player_byes_sort);
+  console.log("pairing bye:", candidates)
+  return [bye[0], candidates[0]]
+}
+
+function getCurrentEntrantsRanking(res, entrants, standings) {
+  // Get standings only for people in current entrants list
+  var ps = standings.filter(p => p.name in entrants.entrants);
+  // Add standings for new entrants with no results
+  var existing = ps.map(p => p.name);
+  var newcomers = entrants.seeding.filter(p => existing.indexOf(p.name) == -1);
+  newcomers = newcomers.map(p => res.getPlayerResults(p.name));
+  console.log("newcomers:", newcomers);
+  var all = ps.concat(newcomers);
   return all
 }
 
-function pairingsAfterRound(res, entrants, round_pairings, round) {
+function pairingsAfterRound(res, entrants, repeats, round_pairings, round) {
   var standings;
-  // console.log("round_pairings:", round)
+  console.log("round_pairings:", round)
   var pair = round_pairings[round + 1];
   if (pair.type == "K") {
     standings = standingsAfterRound(res, entrants, round);
-    return pairKoth(standings)
+    return pairKoth(standings, entrants, round)
   } else if (pair.type == "Q") {
     standings = standingsAfterRound(res, entrants, round);
-    return pairQoth(standings)
+    return pairQoth(standings, entrants, round)
+  } else if (pair.type == "RAND") {
+    standings = standingsAfterRound(res, entrants, round);
+    return pairRandom(standings, entrants, round);
   } else if (pair.type == "R") {
     standings = standingsAfterRound(res, entrants, pair.start - 1);
     return pairRoundRobin(standings, pair.pos)
+  } else if (pair.type == "DR") {
+    standings = standingsAfterRound(res, entrants, pair.start - 1);
+    return pairDoubleRoundRobin(standings, pair.pos)
   } else if (pair.type.startsWith("QD")) {
     standings = standingsAfterRound(res, entrants, pair.start - 1);
     return pairDistributedQuads(standings, pair.pos);
@@ -341,11 +611,12 @@ function pairingsAfterRound(res, entrants, round_pairings, round) {
   } else if (pair.type == "CH") {
     return pairCharlottesville(entrants, round);
   } else if (pair.type == "S") {
-    return pairSwiss(res, entrants, round);
+    return pairSwiss(res, entrants, repeats, round, round + 1);
   } else if (pair.type == "ST") {
-    return pairSwiss(res, entrants, round - 1);
+    return pairSwiss(res, entrants, repeats, round - 1, round + 1);
   }
 }
+
 // -----------------------------------------------------
 // Round robin pairing.
 // See https://github.com/domino14/liwords/ for strategy
@@ -375,14 +646,59 @@ function pairRoundRobin(standings, pos) {
   return pairings
 }
 
-// -----------------------------------------------------
-// King of the hill pairing.
+function pairDoubleRoundRobin(standings, pos) {
+  // Pair for game #pos in a double round robin where everyone plays everyone
+  // else twice, with repeated games played consecutively.
+  var n = standings.length;
+  var pairings = [];
+  pos = Math.round(pos / 2);
+  var [h1, h2] = _pairRR(n, pos - 1);
+  for (var i = 0; i < standings.length / 2; i += 1) {
+    pairings.push({ first: standings[h1[i]], second: standings[h2[i]] });
+  }
+  return pairings
+}
 
-function pairKoth(standings) {
-  // Sort by wins and spread
+// -----------------------------------------------------
+// Random pairing.
+
+function shuffleArray(array) {
+  // In-place Fisher-Yates variant, see
+  // https://stackoverflow.com/questions/2450954/how-to-randomize-shuffle-a-javascript-array
+  for (let i = array.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [array[i], array[j]] = [array[j], array[i]];
+  }
+}
+
+function pairRandom(standings, entrants, round) {
+  var fixed
+  [standings, fixed] = removeFixedPairings(standings, entrants, round + 1);
+  shuffleArray(standings);
+  // Now this is just KotH on the shuffled standings
   var pairings = [];
   for (var i = 0; i < standings.length; i += 2) {
     pairings.push({ first: standings[i], second: standings[i + 1] })
+  }
+  for (var p of fixed) {
+    pairings.push(p);
+  }
+  return pairings
+}
+
+// -----------------------------------------------------
+// King of the hill pairing.
+
+function pairKoth(standings, entrants, round) {
+  // Sort by wins and spread
+  var fixed
+  [standings, fixed] = removeFixedPairings(standings, entrants, round + 1);
+  var pairings = [];
+  for (var i = 0; i < standings.length; i += 2) {
+    pairings.push({ first: standings[i], second: standings[i + 1] })
+  }
+  for (var p of fixed) {
+    pairings.push(p);
   }
   return pairings
 }
@@ -390,8 +706,10 @@ function pairKoth(standings) {
 // -----------------------------------------------------
 // Queen of the hill pairing.
 
-function pairQoth(standings) {
+function pairQoth(standings, entrants, round) {
   // Sort by wins and spread
+  var fixed
+  [standings, fixed] = removeFixedPairings(standings, entrants, round + 1);
   var pairings = [];
   var n = standings.length;
   if (n % 4 == 2) {
@@ -409,6 +727,9 @@ function pairQoth(standings) {
       pairings.push({ first: standings[i], second: standings[i + 2] })
       pairings.push({ first: standings[i + 1], second: standings[i + 3] })
     }
+  }
+  for (var p of fixed) {
+    pairings.push(p);
   }
   return pairings
 }
@@ -457,7 +778,7 @@ function pairGroupsAtPosition(groups, pos) {
 
 function getLastQuadPosition(standings) {
   var leftover = standings.length % 4;
-  // console.log("leftover:", leftover);
+  console.log("leftover:", leftover);
   if (leftover == 0) {
     return standings.length
   } else if (leftover == 2) {
@@ -494,8 +815,8 @@ function pairDistributedQuads(standings, pos) {
     quads[quad].push(standings[i]);
   }
   maybeAddHex(quads, standings, max);
-  // console.log("quads:", quads)
-  // console.log("standings:", standings)
+  console.log("quads:", quads)
+  console.log("standings:", standings)
   return pairGroupsAtPosition(quads, pos);
 }
 
@@ -588,7 +909,7 @@ var Edmonds = function (edges, maxCardinality) {
 
 Edmonds.prototype.maxWeightMatching = function () {
   for (var t = 0; t < this.nVertex; t++) {
-    //// console.log('DEBUG: STAGE ' + t);
+    //console.log('DEBUG: STAGE ' + t);
     this.label = filledArray(2 * this.nVertex, 0);
     this.bestEdge = filledArray(2 * this.nVertex, -1);
     this.blossomBestEdges = initArrArr(2 * this.nVertex);
@@ -601,10 +922,10 @@ Edmonds.prototype.maxWeightMatching = function () {
     }
     var augmented = false;
     while (true) {
-      //// console.log('DEBUG: SUBSTAGE');
+      //console.log('DEBUG: SUBSTAGE');
       while (this.queue.length > 0 && !augmented) {
         v = this.queue.pop();
-        //// console.log('DEBUG: POP ', 'v=' + v);
+        //console.log('DEBUG: POP ', 'v=' + v);
         //console.assert(this.label[this.inBlossom[v]] == 1);
         for (var ii = 0; ii < this.neighbend[v].length; ii++) {
           var p = this.neighbend[v][ii];
@@ -706,7 +1027,7 @@ Edmonds.prototype.maxWeightMatching = function () {
           }
         }
       }
-      //// console.log('DEBUG: deltaType', deltaType, ' delta: ', delta);
+      //console.log('DEBUG: deltaType', deltaType, ' delta: ', delta);
       if (deltaType === 1) {
         break;
       } else if (deltaType === 2) {
@@ -777,7 +1098,7 @@ Edmonds.prototype.blossomLeaves = function (b) {
 };
 
 Edmonds.prototype.assignLabel = function (w, t, p) {
-  //// console.log('DEBUG: assignLabel(' + w + ',' + t + ',' + p + '}');
+  //console.log('DEBUG: assignLabel(' + w + ',' + t + ',' + p + '}');
   var b = this.inBlossom[w];
   //console.assert(this.label[w] === 0 && this.label[b] === 0);
   this.label[w] = this.label[b] = t;
@@ -785,7 +1106,7 @@ Edmonds.prototype.assignLabel = function (w, t, p) {
   this.bestEdge[w] = this.bestEdge[b] = -1;
   if (t === 1) {
     this.queue.push.apply(this.queue, this.blossomLeaves(b));
-    //// console.log('DEBUG: PUSH ' + this.blossomLeaves(b).toString());
+    //console.log('DEBUG: PUSH ' + this.blossomLeaves(b).toString());
   } else if (t === 2) {
     var base = this.blossomBase[b];
     //console.assert(this.mate[base] >= 0);
@@ -794,7 +1115,7 @@ Edmonds.prototype.assignLabel = function (w, t, p) {
 };
 
 Edmonds.prototype.scanBlossom = function (v, w) {
-  //// console.log('DEBUG: scanBlossom(' + v + ',' + w + ')');
+  //console.log('DEBUG: scanBlossom(' + v + ',' + w + ')');
   var path = [];
   var base = -1;
   while (v !== -1 || w !== -1) {
@@ -837,7 +1158,7 @@ Edmonds.prototype.addBlossom = function (base, k) {
   var bv = this.inBlossom[v];
   var bw = this.inBlossom[w];
   var b = this.unusedBlossoms.pop();
-  //// console.log('DEBUG: addBlossom(' + base + ',' + k + ')' + ' (v=' + v + ' w=' + w + ')' + ' -> ' + b);
+  //console.log('DEBUG: addBlossom(' + base + ',' + k + ')' + ' (v=' + v + ' w=' + w + ')' + ' -> ' + b);
   this.blossomBase[b] = base;
   this.blossomParent[b] = -1;
   this.blossomParent[bb] = b;
@@ -894,7 +1215,7 @@ Edmonds.prototype.addBlossom = function (base, k) {
     } else {
       nbLists = [this.blossomBestEdges[bv]];
     }
-    //// console.log('DEBUG: nbLists ' + nbLists.toString());
+    //console.log('DEBUG: nbLists ' + nbLists.toString());
     for (x = 0; x < nbLists.length; x++) {
       var nbList = nbLists[x];
       for (y = 0; y < nbList.length; y++) {
@@ -924,7 +1245,7 @@ Edmonds.prototype.addBlossom = function (base, k) {
     }
   }
   this.blossomBestEdges[b] = be;
-  //// console.log('DEBUG: blossomBestEdges[' + b + ']= ' + this.blossomBestEdges[b].toString());
+  //console.log('DEBUG: blossomBestEdges[' + b + ']= ' + this.blossomBestEdges[b].toString());
   this.bestEdge[b] = -1;
   for (ii = 0; ii < this.blossomBestEdges[b].length; ii++) {
     k = this.blossomBestEdges[b][ii];
@@ -932,11 +1253,11 @@ Edmonds.prototype.addBlossom = function (base, k) {
       this.bestEdge[b] = k;
     }
   }
-  //// console.log('DEBUG: blossomChilds[' + b + ']= ' + this.blossomChilds[b].toString());
+  //console.log('DEBUG: blossomChilds[' + b + ']= ' + this.blossomChilds[b].toString());
 };
 
 Edmonds.prototype.expandBlossom = function (b, endStage) {
-  //// console.log('DEBUG: expandBlossom(' + b + ',' + endStage + ') ' + this.blossomChilds[b].toString());
+  //console.log('DEBUG: expandBlossom(' + b + ',' + endStage + ') ' + this.blossomChilds[b].toString());
   for (var ii = 0; ii < this.blossomChilds[b].length; ii++) {
     var s = this.blossomChilds[b][ii];
     this.blossomParent[s] = -1;
@@ -1011,7 +1332,7 @@ Edmonds.prototype.expandBlossom = function (b, endStage) {
 };
 
 Edmonds.prototype.augmentBlossom = function (b, v) {
-  //// console.log('DEBUG: augmentBlossom(' + b + ',' + v + ')');
+  //console.log('DEBUG: augmentBlossom(' + b + ',' + v + ')');
   var i, j;
   var t = v;
   while (this.blossomParent[t] !== b) {
@@ -1044,7 +1365,7 @@ Edmonds.prototype.augmentBlossom = function (b, v) {
     this.mate[this.endpoint[p]] = p ^ 1;
     this.mate[this.endpoint[p ^ 1]] = p;
   }
-  //// console.log('DEBUG: PAIR ' + this.endpoint[p] + ' ' + this.endpoint[p^1] + '(k=' + ~~(p/2) + ')');
+  //console.log('DEBUG: PAIR ' + this.endpoint[p] + ' ' + this.endpoint[p^1] + '(k=' + ~~(p/2) + ')');
   this.blossomChilds[b] = this.blossomChilds[b].slice(i).concat(this.blossomChilds[b].slice(0, i));
   this.blossomEndPs[b] = this.blossomEndPs[b].slice(i).concat(this.blossomEndPs[b].slice(0, i));
   this.blossomBase[b] = this.blossomBase[this.blossomChilds[b][0]];
@@ -1054,8 +1375,8 @@ Edmonds.prototype.augmentBlossom = function (b, v) {
 Edmonds.prototype.augmentMatching = function (k) {
   var v = this.edges[k][0];
   var w = this.edges[k][1];
-  //// console.log('DEBUG: augmentMatching(' + k + ')' + ' (v=' + v + ' ' + 'w=' + w);
-  //// console.log('DEBUG: PAIR ' + v + ' ' + w + '(k=' + k + ')');
+  //console.log('DEBUG: augmentMatching(' + k + ')' + ' (v=' + v + ' ' + 'w=' + w);
+  //console.log('DEBUG: PAIR ' + v + ' ' + w + '(k=' + k + ')');
   for (var ii = 0; ii < 2; ii++) {
     if (ii === 0) {
       var s = v;
@@ -1085,13 +1406,11 @@ Edmonds.prototype.augmentMatching = function (k) {
       }
       this.mate[j] = this.labelEnd[bt];
       p = this.labelEnd[bt] ^ 1;
-      //// console.log('DEBUG: PAIR ' + s + ' ' + t + '(k=' + ~~(p/2) + ')');
-
+      //console.log('DEBUG: PAIR ' + s + ' ' + t + '(k=' + ~~(p/2) + ')');
 
     }
   }
 };
-
 
 //INIT STUFF//
 Edmonds.prototype.init = function () {
@@ -1216,25 +1535,10 @@ function pIndex(arr, idx) {
 // -----------------------------------------------------
 // Swiss pairing.
 
-function calculateRepeats(results, round) {
-  var repeats = {}
-  for (var r of results.results) {
-    if (r.round <= round) {
-      var key = [r.winner, r.loser].sort()
-      if (repeats[key] === undefined) {
-        repeats[key] = 0
-      }
-      repeats[key] += 1;
-    }
-  }
-  return repeats;
-}
-
-function calculateScoreGroups(results, entrants, round) {
-  var players = standingsAfterRound(results, entrants, round);
-  // console.log("players:", players)
+function calculateScoreGroups(standings) {
   var groups = []
-  for (var p of players) {
+  console.log("standings:", standings)
+  for (var p of standings) {
     var k = p.wins
     if (groups[k] === undefined) {
       groups[k] = []
@@ -1258,15 +1562,16 @@ function calculateScoreGroups(results, entrants, round) {
 function promote(groups, i, j) {
   var top = groups[j]
   if (top === undefined) {
-    // console.log("undef!")
-    // console.log(groups)
-    // console.log(j)
+    console.log("undef!")
+    console.log(groups)
+    console.log(j)
   }
   var fst = groups[j].shift();
   groups[i].push(fst)
 }
 
 function promote2(groups, i) {
+  console.log("promoting two into", i);
   var j = i + 1
   promote(groups, i, j);
   if (groups[j].length == 0) {
@@ -1276,9 +1581,14 @@ function promote2(groups, i) {
   }
 }
 
-function _repeats(repeats, p, q) {
-  var key = [p.name, q.name].sort();
-  return repeats[key] ?? 0
+function mergeBottom(groups) {
+  console.log("merging bottom two groups");
+  if (groups.length == 1) {
+    console.log("only one group, bailing out!")
+  }
+  var last = groups.length - 1;
+  groups[last - 1] = groups[last - 1].concat(groups[last]);
+  groups[last] = [];
 }
 
 function pairSwissInitial(standings) {
@@ -1299,7 +1609,7 @@ function pairSwissTop(groups, repeats, nrep) {
       if (i == j) {
         continue;
       }
-      var reps = _repeats(repeats, top[i], top[j])
+      var reps = repeats.get(top[i].name, top[j].name);
       if (reps < nrep) {
         candidates[i].push([reps, Math.abs(i - j), top[j].name, top[i].name])
       }
@@ -1312,7 +1622,7 @@ function pairSwissTop(groups, repeats, nrep) {
 }
 
 function pairCandidates(bracket) {
-  // // console.log("candidates", candidates);
+  // console.log("candidates", candidates);
   var edges = [];
   var names = {};
   var inames = {};
@@ -1323,21 +1633,24 @@ function pairCandidates(bracket) {
     inames[i] = name;
     i++;
   }
-  // // console.log("names", names)
+  // console.log("names", names)
   // console.log("inames", inames)
 
   for (var player of bracket) {
     for (var m of player) {
       const [repeats, distance, p1, p2] = m;
-      let weight = -(10 * repeats + distance);
-      let v1 = names[p1];
-      let v2 = names[p2];
-      edges.push([v1, v2, weight])
+      // Don't pair candidates too far apart
+      if (distance < 11) {
+        let weight = -(30 * repeats + distance);
+        let v1 = names[p1];
+        let v2 = names[p2];
+        edges.push([v1, v2, weight])
+      }
     }
     // var name = player[0][3]
-    // // console.log(name, player.length, player)
+    // console.log(name, player.length, player)
   }
-  // // console.log("edges:", edges)
+  // console.log("edges:", edges)
   var b = blossom(edges, true)
   // console.log("blossom:", b)
   var pairings = []
@@ -1351,42 +1664,54 @@ function pairCandidates(bracket) {
   return pairings
 }
 
-function pairSwiss(results, entrants, round) {
-  // console.log("swiss pairing based on round", round)
+function pairSwiss(results, entrants, repeats, round, for_round, ) {
+  console.log("swiss pairing based on round", round)
   if (round <= 0) {
     return pairSwissInitial(entrants.seeding);
   }
-  var repeats = calculateRepeats(results, round);
-  // console.log("repeats for round", round, repeats)
-  var groups = calculateScoreGroups(results, entrants, round);
-  // console.log("groups:", groups)
+  //console.log("repeats for round", round, repeats.matches)
+  var players = standingsAfterRound(results, entrants, round);
+  var fixed;
+  [players, fixed] = removeFixedPairings(players, entrants, for_round);
+  var groups = calculateScoreGroups(players);
+  var dgroups = groups.map(g => g.map(p => [p.name, p.wins]));
+  // console.log("groups:", dgroups)
   var candidates;
   var nrep = 1;
   var paired = [];
-  while (true) {
+  // Don't have too small a bottom group
+  if (groups.length > 1) {
+    while (groups[groups.length - 1].length < 6) {
+      mergeBottom(groups);
+      groups = groups.filter(e => e.length != 0);
+    }
+  }
+  while (groups.length > 0) {
+    dgroups = groups.map(g => g.map(p => [p.name, p.wins]));
+    console.log("groups:", dgroups)
     candidates = pairSwissTop(groups, repeats, nrep)
-    //// console.log("candidates:", candidates)
+    //console.log("candidates:", candidates)
     if (candidates.some(e => e.length == 0)) {
       if (groups.length == 1) {
-        // console.log("failed!")
+        console.log("failed!")
         nrep += 1;
-        // console.log("reps:", nrep);
+        console.log("reps:", nrep);
         continue;
       }
       promote2(groups, 0)
       groups = groups.filter(e => e.length != 0)
       if (groups.length == 1) {
-        // console.log("failed!")
+        console.log("failed! after promotion")
         nrep += 1;
-        // console.log("reps:", nrep);
+        console.log("reps:", nrep);
         continue;
       }
     } else {
       var pairs = pairCandidates(candidates)
       if (pairs.some(e => e.second.name === undefined)) {
-        // console.log("unpaired!")
+        console.log("unpaired!")
         nrep += 1;
-        // console.log("reps:", nrep);
+        console.log("reps:", nrep);
         continue;
       }
       groups.shift()
@@ -1396,15 +1721,18 @@ function pairSwiss(results, entrants, round) {
       }
     }
   }
+  console.log("fixed:", fixed)
+  paired.push(fixed);
   var out = []
   for (const group of paired) {
     for (var p of group) {
       if (p.first.name < p.second.name) {
-        p.repeats = _repeats(repeats, p.first, p.second)
+        p.repeats = repeats.get(p.first.name, p.second.name)
         out.push(p)
       }
     }
   }
+  console.log("out:", out)
   return out
 }
 
@@ -1426,7 +1754,7 @@ function outputPlayerStandings(standing_sheet, score_dict, entrants, ratings) {
   standings = standings.filter(x => x.name.toLowerCase() != "bye");
   standings = standings.filter(x => !x.name.includes("bye"));
   var out = standings.map(function (x, index) {
-    var full_name = entrants.entrants[x.name];
+    var full_name = entrants.entrants[x.name] || x.name;
     var rating = ratings[x.name]
     return [
       (index + 1) + ".",
@@ -1434,7 +1762,9 @@ function outputPlayerStandings(standing_sheet, score_dict, entrants, ratings) {
       x.wins + 0.5 * x.ties,
       x.losses + 0.5 * x.ties,
       x.spread,
-      rating
+      rating,
+      "",
+      x.starts,
     ]
   })
 
@@ -1448,8 +1778,8 @@ function outputPlayerStandings(standing_sheet, score_dict, entrants, ratings) {
   outputRange.setValues(out);
 }
 
-function outputPairings(pairing_sheet, text_pairing_sheet, pairings, entrants, round, start_row) {
-  // console.log("pairings:", pairings);
+function outputPairings(pairing_sheet, text_pairing_sheet, pairings, entrants, starts, round, start_row) {
+  console.log("pairings:", pairings);
   var vtable = 1;
   var used = new Set();
   for (var v of Object.values(entrants.tables)) {
@@ -1471,11 +1801,13 @@ function outputPairings(pairing_sheet, text_pairing_sheet, pairings, entrants, r
     var first = x.first.start ? x.first.name : x.second.name;
     var second = x.first.start ? x.second.name : x.first.name;
     var rep = x.repeats > 1 ? `(rep ${x.repeats})` : "";
+    var start = `${starts.starts[first]} - ${starts.starts[second]}`
     return [
       table,
-      entrants.entrants[first],
-      entrants.entrants[second],
+      entrants.entrants[first] || first,
+      entrants.entrants[second] || second,
       rep,
+      start,
     ]
   })
   out = out.sort((a, b) => parseInt(a) - parseInt(b));
@@ -1486,7 +1818,7 @@ function outputPairings(pairing_sheet, text_pairing_sheet, pairings, entrants, r
   var pairing_string = round_header + ": " + pairing_strings.join(" | ");
   text_pairings.push([pairing_string])
   var header = [
-    [round_header, "", "", ""],
+    [round_header, "", "", "", "Firsts"],
   ];
   out = header.concat(out);
   // Write out standings starting in cell A2
@@ -1501,7 +1833,96 @@ function outputPairings(pairing_sheet, text_pairing_sheet, pairings, entrants, r
   textPairingRange.setValues(text_pairings);
 }
 
-function processSheet(input_sheet_label, standings_sheet_label, pairing_sheet_label, text_pairing_sheet_label) {
+function _show_win(g) {
+  if (g === undefined) {
+    return ""
+  }
+  return `${g.winner} ${g.winner_score} - ${g.loser} ${g.loser_score}`
+}
+
+function _show_loss(g) {
+  if (g === undefined) {
+    return ""
+  }
+  return `${g.loser} ${g.loser_score} - ${g.winner} ${g.winner_score}`
+}
+
+function _show_high_game(g) {
+  if (g === undefined) {
+    return ""
+  }
+  var total = g.winner_score + g.loser_score;
+  return `${g.winner} ${g.winner_score} - ${g.loser} ${g.loser_score} (${total})`
+}
+
+function _show_spread(g) {
+  if (g === undefined) {
+    return ""
+  }
+  var spread = g.winner_score - g.loser_score;
+  return `${g.winner} ${g.winner_score} - ${g.loser} ${g.loser_score} (${spread})`
+}
+
+function _show_high_spread(g, entrants) {
+  if (g === undefined) {
+    return ""
+  }
+  var spread = g.winner_score - g.loser_score;
+  var winner_name = entrants.entrants[g.winner] || `${g.winner} (#?)`;
+  var loser_name = entrants.entrants[g.loser] || `${g.loser} (#?)`;
+  return `${winner_name} ${g.winner_score} - ${loser_name} ${g.loser_score}: (${spread})`
+}
+
+function outputStatistics(statistics_sheet, res, entrants) {
+  results = res.results
+  results = [...results].filter((x) => x.loser != 'Bye');
+  var no_ties = [...results].filter((x) => x.winner_score > x.loser_score);
+  var high_game = [...results].sort((x, y) =>
+    y.winner_score + y.loser_score - x.winner_score - x.loser_score);
+  var high_win = [...results].sort((x, y) => y.winner_score - x.winner_score);
+  var low_win = [...results].sort((x, y) => x.winner_score - y.winner_score);
+  var high_loss = [...no_ties].sort((x, y) => y.loser_score - x.loser_score);
+  var low_loss = [...no_ties].sort((x, y) => x.loser_score - y.loser_score);
+  var tie = [...results].filter((x) => x.winner_score == x.loser_score).sort((x, y) => y.loser_score - x.loser_score);
+  var high_spread = [...no_ties].sort((x, y) =>
+    y.winner_score - y.loser_score - x.winner_score + x.loser_score);
+  var low_spread = [...no_ties].sort((x, y) =>
+    x.winner_score - x.loser_score - y.winner_score + y.loser_score);
+  var out = [["Highest Wins", "Highest Losses", "Lowest Wins", "Lowest Losses"]]
+  for (i = 0; i < 10; i++) {
+    out.push([
+      _show_win(high_win[i]),
+      _show_loss(high_loss[i]),
+      _show_win(low_win[i]),
+      _show_loss(low_loss[i])
+    ].map((x) => x == "" ? "" : `${i + 1}. ${x}`))
+  }
+  out.push(["", "", "", ""]);
+  out.push(["", "", "", ""]);
+
+  out.push(["Highest Games", "Biggest Blowouts", "Nailbiters", "Ties"]);
+  for (i = 0; i < 10; i++) {
+    out.push([
+      _show_high_game(high_game[i]),
+      _show_spread(high_spread[i], entrants),
+      _show_spread(low_spread[i]),
+      _show_win(tie[i])
+    ].map((x) => x == "" ? "" : `${i + 1}. ${x}`))
+  }
+  console.log(out)
+
+  // Write out standings starting in cell A2
+  var outputRow = 1;
+  var outputCol = 1;
+  statistics_sheet.clearContents();
+  var outputRange = statistics_sheet.getRange(outputRow, outputCol, out.length, out[0].length);
+  outputRange.setValues(out);
+}
+
+function processSheet(
+  input_sheet_label, standings_sheet_label, pairing_sheet_label, text_pairing_sheet_label,
+  statistics_sheet_label
+) {
   var sheet = SpreadsheetApp.getActiveSpreadsheet();
   var result_sheet = sheet.getSheetByName(input_sheet_label);
 
@@ -1512,30 +1933,42 @@ function processSheet(input_sheet_label, standings_sheet_label, pairing_sheet_la
   for (var x of entrants.seeding) {
     ratings[x.name] = x.rating
   }
+  var fp = collectFixedPairings();
+  entrants.fixed_pairings = fp.pairings;
+  entrants.fixed_starts = fp.starts;
 
-  // console.log("processed results");
+  console.log("processed results");
 
+  if (entrants.seeding.length % 2 != 0) {
+    SpreadsheetApp.getUi().alert("Field has an odd number of players. Add a Bye if needed.");
+    return;
+  }
 
   // Write out the standings
   var standings_sheet = sheet.getSheetByName(standings_sheet_label);
   outputPlayerStandings(standings_sheet, res.players, entrants, ratings);
 
+  // Write out statistics
+  var statistics_sheet = sheet.getSheetByName(statistics_sheet_label);
+  outputStatistics(statistics_sheet, res, entrants);
+
   // Write out the pairings
   var round_pairings = collectRoundPairings();
-  // console.log("round pairings:", round_pairings);
+  console.log("round pairings:", round_pairings);
 
   // Find the last round we can pair
   var round_ids = res.roundIds();
-  // console.log("round ids:", round_ids);
+  console.log("round ids:", round_ids);
   var last_result = Math.max(...round_ids);
   var last_round = 0;
   for (var r of Object.values(round_pairings)) {
-    if (r.start - 1 <= last_result) {
-      // console.log("Pairing round", r, "based on round", r.start);
+    if ((r.start - 1 <= last_result) ||
+      (r.type == "R" && r.start - 1 <= last_round)) {
+      console.log("Pairing round", r, "based on round", r.start);
       last_round = r.round;
     }
   }
-  // console.log("Last round", last_round);
+  console.log("Last round", last_round);
 
   var pairing_sheet = sheet.getSheetByName(pairing_sheet_label);
   var text_pairing_sheet = sheet.getSheetByName(text_pairing_sheet_label);
@@ -1545,68 +1978,47 @@ function processSheet(input_sheet_label, standings_sheet_label, pairing_sheet_la
   text_pairing_sheet.clearContents();
 
   var row = 2;
-  var rr_starts = {}
+  var repeats = new Repeats();
+  var starts = new Starts(res, entrants);
+  BYES.reset();
   for (var i = 0; i < last_round; i++) {
-    var rp = round_pairings[i + 1];
-    // console.log("writing pairings for round:", i, rp);
+    var round = i + 1;
+    var rp = round_pairings[round];
+    console.log("writing pairings for round:", round, rp);
     var pairings;
-    if (i + 1 < round_ids.length) {
-      pairings = res.extractPairings(i + 1)
-    } else {
-      pairings = pairingsAfterRound(res, entrants, round_pairings, i);
+    if ((round < round_ids.length) && res.isRoundComplete(round)) {
+      pairings = res.extractPairings(round)
       for (var p of pairings) {
-        var p1 = p.first.name;
-        var p2 = p.second.name;
-        var p1_first;
-        if (rp.type == "R" || rp.type == "CH") {
-          if (rr_starts[p1] === undefined) {
-            rr_starts[p1] = 0
-          }
-          if (rr_starts[p2] === undefined) {
-            rr_starts[p2] = 0
-          }
-          // Always assign 'bye' the first otherwise the player playing the bye
-          // is assigned an extra first andthereby slightly penalised.
-          if (p1.toLowerCase() === "bye") {
-            p1_first = true;
-          } else if (p2.toLowerCase() === "bye") {
-            p1_first = false;
-          } else {
-            p1_first = rr_starts[p1] <= rr_starts[p2];
-          }
-          if (p1_first) {
-            rr_starts[p1]++;
-          } else {
-            rr_starts[p2]++;
-          }
-        } else {
-          if (p1.toLowerCase() === "bye") {
-            p1_first = true;
-          } else if (p2.toLowerCase() === "bye") {
-            p1_first = false;
-          } else {
-            p1_first = res.players[p1].starts <= res.players[p2].starts;
-          }
+        starts.register(p, round);
+      }
+    } else {
+      for (var k of Object.keys(res.players)) {
+        var b = BYES.get(k);
+        if (b > 0) {
+          console.log(`byes for ${k}: ${b}`);
         }
+      }
+      pairings = pairingsAfterRound(res, entrants, repeats, round_pairings, i);
+      for (var p of pairings) {
+        var p1_first = starts.add(p.first.name, p.second.name, round);
         p.first.start = p1_first;
         p.second.start = !p1_first;
       }
     }
-    var repeats = res.calculateRepeats(i + 1);
     for (var p of pairings) {
-      var key = [p.first.name, p.second.name].sort();
-      p.repeats = repeats[key]
+      BYES.update(p);
+      p.repeats = repeats.add(p.first.name, p.second.name);
     }
-    outputPairings(pairing_sheet, text_pairing_sheet, pairings, entrants, i, row);
+    outputPairings(pairing_sheet, text_pairing_sheet, pairings, entrants, starts, i, row);
     row += pairings.length + 2;
   }
 }
 
 function calculateStandings() {
-  processSheet("Results", "Standings", "Pairings", "Text Pairings");
+  processSheet("Results", "Standings", "Pairings", "Text Pairings", "Stats");
 }
 
 export {
   makeEntrants, makeRoundPairings, makeResults, pairingsAfterRound,
-  standingsAfterRound
+  standingsAfterRound, Repeats
 };

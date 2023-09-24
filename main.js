@@ -1,10 +1,10 @@
 import { readMatrix } from 'https://deno.land/std@0.82.0/encoding/csv.ts';
-import { BufReader } from "https://deno.land/std/io/bufio.ts";
+import { BufReader } from "https://deno.land/std@0.202.0/io/mod.ts";
 
 
 import { 
   makeEntrants, makeRoundPairings, makeResults, pairingsAfterRound,
-  standingsAfterRound
+  standingsAfterRound, Repeats
 } from "./code.js";
 
 function randBetween(min, max) {
@@ -63,15 +63,22 @@ function displayPairing(p, entrants) {
   return {first: f_name, second: s_name, repeats: p.repeats}
 }
 
+function lookup_seeding(entrants, name) {
+  return entrants.seeding.find((e) => e.name == name)
+}
+
 function sim(entrants, round_pairings) {
   console.log("Seeding:");
   console.table(entrants.seeding);
+  console.log("Round Pairings:");
+  console.table(round_pairings);
   var res = makeResults([]);
+  var repeats = new Repeats();
   for (var r = 0; r < round_pairings.length - 1; r++) {
-    var pairings = pairingsAfterRound(res, entrants, round_pairings, r);
+    var pairings = pairingsAfterRound(res, entrants, repeats, round_pairings, r);
     for (var p of pairings) {
-      p.first = entrants.seeding_lookup[p.first.name];
-      p.second = entrants.seeding_lookup[p.second.name];
+      p.first = lookup_seeding(entrants, p.first.name);
+      p.second = lookup_seeding(entrants, p.second.name);
     }
     console.log("Pairings for round", r + 1);
     var display_pairings = pairings.map(p => displayPairing(p, entrants));
