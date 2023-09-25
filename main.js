@@ -18,7 +18,7 @@ function simResult(p, round) {
   var rand = Math.random();
   var l_score = randBetween(200, 350);
   var w_score = randBetween(351, 600);
-  var start = Math.random() > 0.5 ? "first" : "second";
+  var start;
   // Pick the winner based on seeding (better seed = higher prob. of winning).
   var prob_higher_seed_wins = 0.75;
   var winner, loser;
@@ -49,6 +49,7 @@ function simResult(p, round) {
     w_score = 50;
     l_score = 0;
   }
+  start = p.first.name == winner.name ? "first" : "second";
   var result = [round, winner.name, w_score, loser.name, l_score, start];
   return result;
 }
@@ -118,10 +119,23 @@ function roundPairings() {
   return makeRoundPairings(round_pairings);
 }
 
+function make_entrants(){
+  var entrants = Array.from({length: 16}, (e, i) => [
+    `Player${i + 1}`,
+    (1500 + i * 20).toString(),
+    "",
+    "",
+    (i + 1).toString(),
+  ]);
+  // Fixed tables
+  entrants[3][3] = "8";
+  console.table(entrants);
+  return entrants;
+}
+
 async function main() {
-  const f = await Deno.open('entrants.csv');
-  const content = await readMatrix(new BufReader(f));
-  var entrants = makeEntrants(content);
+  var es = make_entrants();
+  var entrants = makeEntrants(es);
   var round_pairings = roundPairings();
   sim(entrants, round_pairings);
 }
