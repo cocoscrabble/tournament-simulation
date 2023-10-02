@@ -4,7 +4,8 @@ import { BufReader } from "https://deno.land/std@0.202.0/io/mod.ts";
 
 import { 
   makeEntrants, makeRoundPairings, makeResults, pairingsAfterRound,
-  standingsAfterRound, Repeats
+  standingsAfterRound, runPairings, formatPairings,
+  Repeats, Starts
 } from "./code.js";
 
 function randBetween(min, max) {
@@ -49,6 +50,7 @@ function simResult(p, round) {
     w_score = 50;
     l_score = 0;
   }
+  // Convert starts to "winner went first"
   start = p.first.name == winner.name ? "first" : "second";
   var result = [round, winner.name, w_score, loser.name, l_score, start];
   return result;
@@ -58,14 +60,32 @@ function simRoundResults(pairings, round) {
   return pairings.map(p => simResult(p, round));
 }
 
-function displayPairing(p, entrants) {
-  var f_name = entrants.entrants[p.first.name];
-  var s_name = entrants.entrants[p.second.name];
-  return {first: f_name, second: s_name, repeats: p.repeats}
+function displayPairing(p, entrants, starts) {
+  var f_name = p.first.name;
+  var s_name = p.second.name;
+  var fs = p.first.starts
+  var ss = p.second.starts
+  return {first: f_name, fs: fs, second: s_name, ss: ss, repeats: p.repeats}
 }
 
 function lookup_seeding(entrants, name) {
   return entrants.seeding.find((e) => e.name == name)
+}
+
+function process(res, entrants, round_pairings) {
+  var starts = new Starts(res, entrants);
+  var all_pairings = runPairings(res, entrants, round_pairings, starts);
+  var round = 0;
+  for (var pairings of all_pairings) {
+    round += 1;
+    console.log("Pairings for round", round);
+    console.log(pairings)
+    var display_pairings = pairings.map(p => displayPairing(p, entrants, starts));
+    console.table(display_pairings);
+    var sheet_display = formatPairings(pairings, entrants, starts, round);
+    console.table(sheet_display);
+  }
+  return all_pairings;
 }
 
 function sim(entrants, round_pairings) {
@@ -74,16 +94,9 @@ function sim(entrants, round_pairings) {
   console.log("Round Pairings:");
   console.table(round_pairings);
   var res = makeResults([]);
-  var repeats = new Repeats();
-  for (var r = 0; r < round_pairings.length - 1; r++) {
-    var pairings = pairingsAfterRound(res, entrants, repeats, round_pairings, r);
-    for (var p of pairings) {
-      p.first = lookup_seeding(entrants, p.first.name);
-      p.second = lookup_seeding(entrants, p.second.name);
-    }
-    console.log("Pairings for round", r + 1);
-    var display_pairings = pairings.map(p => displayPairing(p, entrants));
-    console.table(display_pairings);
+  for (var r = 0; r < round_pairings.length; r++) {
+    var all_pairings = process(res, entrants, round_pairings);
+    var pairings = all_pairings[all_pairings.length - 1];
     var results = simRoundResults(pairings, r + 1);
     var new_res = makeResults(results);
     console.log("Simulated results for round", r + 1);
@@ -99,22 +112,23 @@ function sim(entrants, round_pairings) {
 }
 
 function roundPairings() {
+  const p = "RANDNR"
   var round_pairings = [
-    [1, "S"],
-    [2, "S"],
-    [3, "S"],
-    [4, "S"],
-    [5, "S"],
-    [6, "S"],
-    [7, "S"],
-    [8, "S"],
-    [9, "S"],
-    [10, "S"],
-    [11, "S"],
-    [12, "S"],
-    [13, "S"],
-    [14, "S"],
-    [15, "S"],
+    [1, p],
+    [2, p],
+    [3, p],
+    [4, p],
+    [5, p],
+    [6, p],
+    [7, p],
+    [8, p],
+    [9, p],
+    [10, p],
+    [11, p],
+    [12, p],
+    [13, p],
+    [14, p],
+    [15, p],
   ]
   return makeRoundPairings(round_pairings);
 }
@@ -128,7 +142,7 @@ function make_entrants(){
     (i + 1).toString(),
   ]);
   // Fixed tables
-  entrants[3][3] = "8";
+  //entrants[3][3] = "8";
   console.table(entrants);
   return entrants;
 }
