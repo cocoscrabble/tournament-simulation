@@ -3,8 +3,8 @@ import { BufReader } from "https://deno.land/std@0.202.0/io/mod.ts";
 
 
 import { 
-  makeEntrants, makeRoundPairings, makeResults, pairingsAfterRound,
-  standingsAfterRound, runPairings, formatPairings,
+  makeEntrants, makeRoundPairings, makeResults, makeFixedPairings,
+  pairingsAfterRound, standingsAfterRound, runPairings, formatPairings,
   Repeats, Starts
 } from "./code.js";
 
@@ -94,7 +94,7 @@ function sim(entrants, round_pairings) {
   console.log("Round Pairings:");
   console.table(round_pairings);
   var res = makeResults([]);
-  for (var r = 0; r < round_pairings.length; r++) {
+  for (var r = 0; r < round_pairings.length - 1; r++) {
     var all_pairings = process(res, entrants, round_pairings);
     var pairings = all_pairings[all_pairings.length - 1];
     var results = simRoundResults(pairings, r + 1);
@@ -107,34 +107,41 @@ function sim(entrants, round_pairings) {
     var standings = standingsAfterRound(res, entrants, r + 1);
     console.log("Standings after round", r + 1);
     console.table(standings);
+    console.log("------------------------------------------------------------------------------------");
   }
   return res;
 }
 
 function roundPairings() {
-  const p = "RANDNR"
+  const p = "R1"
+  const q = "R2"
   var round_pairings = [
     [1, p],
     [2, p],
     [3, p],
     [4, p],
     [5, p],
-    [6, p],
-    [7, p],
-    [8, p],
-    [9, p],
-    [10, p],
-    [11, p],
-    [12, p],
-    [13, p],
-    [14, p],
-    [15, p],
+    [6, q],
+    [7, q],
+    [8, q],
+    [9, q],
+    [10, q],
+    // [11, p],
+    // [12, p],
+    // [13, p],
+    // [14, p],
+    // [15, p],
   ]
   return makeRoundPairings(round_pairings);
 }
 
+function fixedPairings() {
+  const fp = [[3, "Player4", "Player1", "yes"]];
+  return makeFixedPairings(fp)
+}
+
 function make_entrants(){
-  var entrants = Array.from({length: 16}, (e, i) => [
+  var entrants = Array.from({length: 6}, (e, i) => [
     `Player${i + 1}`,
     (1500 + i * 20).toString(),
     "",
@@ -150,6 +157,9 @@ function make_entrants(){
 async function main() {
   var es = make_entrants();
   var entrants = makeEntrants(es);
+  var fp = fixedPairings();
+  entrants.fixed_pairings = fp.pairings;
+  entrants.fixed_starts = fp.starts;
   var round_pairings = roundPairings();
   sim(entrants, round_pairings);
 }
